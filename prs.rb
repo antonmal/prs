@@ -34,7 +34,8 @@ class Computer
 
   PERSONALITIES = [
     { name: 'R2D2', probabilities: { 'p' => 0, 'r' => 80, 's' => 20 } },
-    { name: 'Wall-E', probabilities: { 'p' => 50, 'r' => 0, 's' => 50 } }
+    { name: 'Wall-E', probabilities: { 'p' => 50, 'r' => 0, 's' => 50 } },
+    { name: 'Hulk', probabilities: { 'p' => 25, 'r' => 25, 's' => 50 } }
   ]
   USE_PERSONALITIES = true
   HUNDRED_PERCENT = 100.0
@@ -154,24 +155,26 @@ class Results
   end
 
   def show_stats
-    puts "Stats:\n" +
-      stat_str(:won).light_green +
-      stat_str(:lost).light_red +
-      stat_str(:tied).light_blue
+    puts 'Stats:'
+    puts stat_str(:won).light_green
+    puts stat_str(:lost).light_red
+    puts stat_str(:tied).light_blue
     puts
   end
 
   def stat_str(res)
     res_perc = "#{res}_perc".to_sym
-    "#{res.capitalize}: #{stats[res]} game(s) [#{stats[res_perc]}%]\n"
+    "#{res.capitalize}: #{stats[res]} game(s) [#{stats[res_perc]}%]"
   end
 
   def show_log
     log.each do |line|
-      puts "#{line[:time]} - " \
-        "#{line[:result].to_s.upcase}: " \
-        "#{line[:player].name.capitalize} vs. " \
-        "#{line[:computer].name.capitalize}"
+      puts <<-STR.single_line_undent
+        #{line[:time]} -
+        #{line[:result].to_s.upcase}:
+        #{line[:player].name.capitalize} vs.
+        #{line[:computer].name.capitalize}
+      STR
     end
     puts
   end
@@ -198,9 +201,14 @@ class PRS
 
   def show_start_screen
     clear
-    puts "\nWelcome to Paper-Rock-Scissors game!\n\n"
-    puts "You are playing against #{computer.name}.\n\n"
-    puts "Let's start..."
+    puts <<-STR.undent
+
+      Welcome to Paper-Rock-Scissors game!
+
+      You are playing against #{computer.name}
+
+      Let's start...
+    STR
     sleep 1
   end
 
@@ -283,21 +291,20 @@ class PRS
     case result
     when :won then say_won
     when :lost then say_lost
-    else puts "It's a tie.\n\n"
+    else puts "It's a tie."
     end
+    puts "\n"
   end
 
   def say_won
     puts "Congratulations! You WON!\n"
-    puts Move.result_str(player.move, computer.move) + "\n\n"
+    puts Move.result_str(player.move, computer.move)
   end
 
   def say_lost
     puts "Sorry, you LOST...\n"
-    puts Move.result_str(computer.move, player.move) + "\n\n"
+    puts Move.result_str(computer.move, player.move)
   end
-
-  private
 
   def clear
     system('clear') || system('cls')
@@ -345,9 +352,10 @@ class Move
 
   def initialize(value)
     unless Move.chars.include? value
-      fail ArgumentError,
-           "Unrecognized move value: '#{value}'. " \
-             'Acceptable values: ' + Move.chars.join(', ') + '.'
+      fail ArgumentError, <<-MSG.undent
+        Unrecognized move value: '#{value}'.
+        Acceptable values: #{Move.chars.join(', ')}.
+      MSG
     end
 
     @value = value
@@ -391,6 +399,17 @@ class Move
 
   def self.chars
     OPTIONS.keys
+  end
+end
+
+# Fix indentation for heredocs (milti-line strings)
+class String
+  def single_line_undent
+    gsub(/^[ \t]+/, '').split("\n").join(' ')
+  end
+
+  def undent
+    gsub(/^[ \t]+/, '')
   end
 end
 
