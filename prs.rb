@@ -1,37 +1,46 @@
-require 'pry'
 require 'colorize'
 
+# Handles human player moves in the game.
 class Player
-  attr_accessor :move, :game
-
-  def initialize(game)
-    @game = game
-  end
+  attr_accessor :move
 
   def make_move
-    begin
+    move_char = ''
+    loop do
       puts
-      puts Move.prompt
+      puts prompt
       move_char = gets.chomp.downcase
-    end until Move::OPTIONS.keys.include? move_char
+      break if valid_move?(move_char)
+    end
     @move = Move.new(move_char)
-    puts  "You chose:       " +
-          "#{Move::OPTIONS[move_char].upcase}\n".light_cyan
+    puts 'You chose:       ' + "#{Move::OPTIONS[move_char].upcase}\n".light_cyan
+  end
+
+  private
+
+  def prompt
+    Move.prompt
+  end
+
+  def valid_move?(move)
+    Move.chars.include? move
   end
 end
 
-
-class Computer < Player
-  attr_accessor :personality
+# Handles computer moves in the game
+# and 'personalities' that affect these moves
+class Computer
+  attr_accessor :move, :personality, :results
 
   PERSONALITIES = [
-    { name: "R2D2", probabilities: { "p" => 0, "r" => 80, "s" => 20 } },
-    { name: "Wall-E", probabilities: { "p" => 50, "r" => 0, "s" => 50 } }
+    { name: 'R2D2', probabilities: { 'p' => 0, 'r' => 80, 's' => 20 } },
+    { name: 'Wall-E', probabilities: { 'p' => 50, 'r' => 0, 's' => 50 } }
   ]
   USE_PERSONALITIES = true
+  HUNDRED_PERCENT = 100.0
 
-  def initialize(game)
-    super
+  def initialize(results)
+    @results = results
     @personality = PERSONALITIES.sample
   end
 
@@ -42,97 +51,127 @@ class Computer < Player
   def make_move
     if USE_PERSONALITIES
       @move = personality_biased_move
-    elsif game.results.log.size >= 3
+    elsif results.stats[:total] >= 3
       @move = smart_counter_move
     else
       @move = random_move
     end
 
-    puts  "#{self.name} chose:  " +
-          "#{move.name.upcase}\n".yellow
-  end
-
-  def personality_biased_move
-    accumulated_prob = 0
-    probs = personality[:probabilities].each_with_object({}) do |(k, v), hash|
-              hash[k] = v + accumulated_prob
-              accumulated_prob += v
-            end
-    rnd = rand(accumulated_prob)
-    mv = probs.select {|k,v| v >= rnd }.keys.first
-    Move.new(mv)
+    puts "#{name} chose:  " \
+         "#{move.name.upcase}\n".yellow
   end
 
   def random_move
-    mv = Move::OPTIONS.keys.sample
-    Move.new(mv)
+    random_move = Move.chars.sample
+    Move.new(random_move)
+  end
+
+  def personality_biased_move
+    choose_move_from(personality[:probabilities])
   end
 
   def smart_counter_move
-    accumulated_prob = 0
-    unused_move_prob = 100.0 / Move::OPTIONS.keys.size / 2
-    probs = Move::OPTIONS.keys.each_with_object(Hash.new(0)) do |m, h|
-              this_move_prob = game.results.log.count{|e| e[:player] == m} / game.results.log.size.to_f * 100
-              this_move_prob = unused_move_prob if this_move_prob == 0
-              this_move_prob += accumulated_prob
-              h[m] = this_move_prob.ceil
-              accumulated_prob = this_move_prob.ceil
-            end
-    rnd = rand(accumulated_prob)
-    mv = probs.select {|k,v| v >= rnd }.keys.first
-    Move.new(mv)
+    player_fav_move = choose_move_from(moves_with_probs)
+    player_fav_move.opposite
   end
 
+  def choose_move_from(move_hash)
+    sum_of_probs = move_hash.values.inject(:+)
+    rnd = rand(sum_of_probs + 1)
+    move_hash.each do |move, prob|
+      rnd -= prob
+      return Move.new(move) if rnd <= 0
+    end
+  end
 
+  def moves_with_probs
+    Move.chars.each_with_object(Hash.new(0)) do |move, hash|
+      hash[move] = historical_prob(move)
+      hash[move] = unused_move_prob if hash[move] == 0
+    end
+  end
+
+  def historical_prob(move)
+    number_of_such_moves = results.log.count do |line|
+      line[:player].value == move
+    end
+    total_moves_made = results.log.size.to_f
+    (number_of_such_moves / total_moves_made * HUNDRED_PERCENT).ceil
+  end
+
+  def unused_move_prob
+    # if user never made a specific move,
+    # consider that the probability of him making that move next
+    # is equal to 100% / number of move options / 2
+    # in other words, half of average probability for each move
+    (HUNDRED_PERCENT / Move.chars.size / 2).ceil
+  end
 end
 
+# Stores results of game rounds and calculates statistics.
+# Stats are then used for move choices and for game logic.
 class Results
-  attr_accessor :game, :log, :stats
+  attr_accessor :log, :stats
 
-  def initialize(game)
-    @game = game
+  def initialize
     @log = []
+    @stats = []
   end
 
-  def add_to_log
-    log << {
-      time:     Time.now,
-      result:   game.result,
-      player:   game.player.move.to_s,
-      computer: game.computer.move.to_s
-    }
+  def add_to_log(args)
+    result = args.fetch(:result, :tied)
+    player = args.fetch(:player, Move.new('p'))
+    comp = args.fetch(:computer, Move.new('p'))
+    log << { time: Time.now, result: result, player: player, computer: comp }
+    update_stats
+    update_perc
   end
 
-  def stats
-    {
+  def update_stats
+    self.stats = {
       total:  log.size,
-      won:    log.count { |e| e[:result] == :won },
-      lost:   log.count { |e| e[:result] == :lost },
-      tied:   log.count { |e| e[:result] == :tied }
+      won:    count(:won),
+      lost:   count(:lost),
+      tied:   count(:tied)
     }
   end
 
-  def perc
-    {
-      won:    (stats[:won].to_f / stats[:total] * 100).round(2),
-      lost:   (stats[:lost].to_f / stats[:total] * 100).round(2),
-      tied:   (stats[:tied].to_f / stats[:total] * 100).round(2)
+  def count(result)
+    log.count { |e| e[:result] == result }
+  end
+
+  def update_perc
+    perc = {
+      won_perc:    percentage(:won),
+      lost_perc:   percentage(:lost),
+      tied_perc:   percentage(:tied)
     }
+    stats.merge!(perc)
+  end
+
+  def percentage(result)
+    (stats[result].to_f / stats[:total] * 100).round(2)
   end
 
   def show_stats
-    puts "Stats:"
-    puts "Won: #{stats[:won]} game(s) [#{perc[:won]}%]".light_green
-    puts "Lost: #{stats[:lost]} game(s) [#{perc[:lost]}%]".light_red
-    puts "Tied: #{stats[:tied]} game(s) [#{perc[:tied]}%]".light_blue
+    puts "Stats:\n" +
+      stat_str(:won).light_green +
+      stat_str(:lost).light_red +
+      stat_str(:tied).light_blue
     puts
+  end
+
+  def stat_str(res)
+    res_perc = "#{res}_perc".to_sym
+    "#{res.capitalize}: #{stats[res]} game(s) [#{stats[res_perc]}%]\n"
   end
 
   def show_log
     log.each do |line|
-      puts "#{line[:time]} - " +
-        "#{line[:result].to_s.upcase}: " + "#{Move::OPTIONS[line[:player]].capitalize} vs. " +
-        "#{Move::OPTIONS[line[:computer]].capitalize}"
+      puts "#{line[:time]} - " \
+        "#{line[:result].to_s.upcase}: " \
+        "#{line[:player].name.capitalize} vs. " \
+        "#{line[:computer].name.capitalize}"
     end
     puts
   end
@@ -142,7 +181,8 @@ class Results
   end
 end
 
-
+# Manages the flow (logic) of the Paper-Rock-Scissors game.
+# Displays game messages.
 class PRS
   attr_accessor :player, :computer, :results
 
@@ -150,41 +190,58 @@ class PRS
   VERSION = 'prs'
   # VERSION = 'prskl'
 
-
   def initialize
-    @player = Player.new(self)
-    @computer = Computer.new(self)
-    @results = Results.new(self)
+    @results = Results.new
+    @player = Player.new
+    @computer = Computer.new(@results)
   end
 
-  def play
+  def show_start_screen
     clear
     puts "\nWelcome to Paper-Rock-Scissors game!\n\n"
     puts "You are playing against #{computer.name}.\n\n"
     puts "Let's start..."
     sleep 1
+  end
 
+  def play_round
+    clear
+    player.make_move
+    computer.make_move
+    show_move_result
+    results.add_to_log(
+      result: result,
+      player: player.move,
+      computer: computer.move
+    )
+    results.show_stats
+  end
+
+  def end_game
+    results.show_log
+    show_game_result
+    clear_score
+  end
+
+  def next_round?
+    puts 'Press any key to continue.'
+    gets
+  end
+
+  def one_more_game?
+    puts "\n=> Do you want to play again? (y/n)"
+    gets.chomp.downcase != 'n'
+  end
+
+  def play
+    show_start_screen
     loop do
       loop do
-        clear
-        player.make_move
-        computer.make_move
-        show_move_result
-
-        results.add_to_log
-        results.show_stats
-        break if wins_limit_reached?
-
-        puts "Press any key to continue."
-        gets
+        play_round
+        break if wins_limit_reached? || !next_round?
       end
-
-      results.show_log
-      show_game_result
-
-      puts "\n=> Do you want to play again? (y/n)".white.bold
-      break unless gets.chomp.downcase == "y"
-      clear_score
+      end_game
+      break unless one_more_game?
     end
   end
 
@@ -197,15 +254,23 @@ class PRS
   end
 
   def show_game_result
-    if results.stats[:won] > results.stats[:lost]
-      puts "Congratulations! You WON!"
+    if won?
+      puts 'Congratulations! You WON!'
       puts "You were first to win #{WINS_LIMIT} games.\n"
-    elsif results.stats[:lost] > results.stats[:won]
-      puts "Oops, you LOST!"
+    elsif lost?
+      puts 'Oops, you LOST!'
       puts "#{computer.name} was first to win #{WINS_LIMIT} games\n"
     else
       puts "A tie? How could this happen?\n"
     end
+  end
+
+  def won?
+    results.stats[:won] > results.stats[:lost]
+  end
+
+  def lost?
+    results.stats[:lost] > results.stats[:won]
   end
 
   def result
@@ -216,15 +281,20 @@ class PRS
 
   def show_move_result
     case result
-    when :won
-      puts "Congratulations! You WON!\n"
-      puts Move.result_str(player.move, computer.move) + "\n\n"
-    when :lost
-      puts "Sorry, you LOST...\n"
-      puts Move.result_str(computer.move, player.move) + "\n\n"
-    else
-      puts "It's a tie.\n\n"
+    when :won then say_won
+    when :lost then say_lost
+    else puts "It's a tie.\n\n"
     end
+  end
+
+  def say_won
+    puts "Congratulations! You WON!\n"
+    puts Move.result_str(player.move, computer.move) + "\n\n"
+  end
+
+  def say_lost
+    puts "Sorry, you LOST...\n"
+    puts Move.result_str(computer.move, player.move) + "\n\n"
   end
 
   private
@@ -234,52 +304,50 @@ class PRS
   end
 end
 
-
+# Handles game moves: options, comparisons, winning combinations
 class Move
   attr_accessor :value
 
   if PRS::VERSION == 'prskl'
     OPTIONS = {
-      "p" => "paper",
-      "r" => "rock",
-      "s" => "scissors",
-      "k" => "spock",
-      "l" => "lizard"
+      'p' => 'paper',
+      'r' => 'rock',
+      's' => 'scissors',
+      'k' => 'spock',
+      'l' => 'lizard'
     }
 
     WINNING_COMBINATIONS = {
-      "sp" => "Scissors cut Paper.",
-      "pr" => "Paper covers Rock.",
-      "rl" => "Rock crushes Lizard.",
-      "lk" => "Lizard poisons Spock.",
-      "ks" => "Spock smashes Scissors.",
-      "sl" => "Scissors decapitates Lizard.",
-      "lp" => "Lizard eats Paper.",
-      "pk" => "Paper disproves Spock.",
-      "kr" => "Spock vaporizes Rock.",
-      "rs" => "Rock crushes Scissors."
+      'sp' => 'Scissors cut Paper.',
+      'pr' => 'Paper covers Rock.',
+      'rl' => 'Rock crushes Lizard.',
+      'lk' => 'Lizard poisons Spock.',
+      'ks' => 'Spock smashes Scissors.',
+      'sl' => 'Scissors decapitates Lizard.',
+      'lp' => 'Lizard eats Paper.',
+      'pk' => 'Paper disproves Spock.',
+      'kr' => 'Spock vaporizes Rock.',
+      'rs' => 'Rock crushes Scissors.'
     }
   else
     OPTIONS = {
-      "p" => "paper",
-      "r" => "rock",
-      "s" => "scissors"
+      'p' => 'paper',
+      'r' => 'rock',
+      's' => 'scissors'
     }
 
     WINNING_COMBINATIONS = {
-      "sp" => "Scissors cut Paper.",
-      "pr" => "Paper covers Rock.",
-      "rs" => "Rock crushes Scissors."
+      'sp' => 'Scissors cut Paper.',
+      'pr' => 'Paper covers Rock.',
+      'rs' => 'Rock crushes Scissors.'
     }
   end
 
-
   def initialize(value)
-    unless OPTIONS.keys.include? value
+    unless Move.chars.include? value
       fail ArgumentError,
-        "Unrecognized move value: '#{value}'. " +
-        "Acceptable values: " +
-        OPTIONS.keys.join(", ") + "."
+           "Unrecognized move value: '#{value}'. " \
+             'Acceptable values: ' + Move.chars.join(', ') + '.'
     end
 
     @value = value
@@ -307,17 +375,22 @@ class Move
     value.to_s == other.to_s
   end
 
-  def opposites
-    OPTIONS.keys.select {|e| Move.new(e) > self }
+  def opposite
+    opposite_moves = Move.chars.select { |e| Move.new(e) > self }
+    Move.new(opposite_moves.sample)
   end
 
   def self.prompt
-    opts = OPTIONS.map { |k,v| v.sub(k, "(#{k.capitalize})") }
-    opts[0..-2].join(", ") + " or " + opts[-1] + "?"
+    opts = OPTIONS.map { |k, v| v.sub(k, "(#{k.capitalize})") }
+    opts[0..-2].join(', ') + ' or ' + opts[-1] + '?'
   end
 
   def self.result_str(move1, move2)
     WINNING_COMBINATIONS["#{move1}#{move2}"]
+  end
+
+  def self.chars
+    OPTIONS.keys
   end
 end
 
